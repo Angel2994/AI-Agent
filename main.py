@@ -1,9 +1,12 @@
 import os
+import sys
 from dotenv import load_dotenv
 from openai import OpenAI
 import argparse
 from prompts import system_prompt 
 from call_function import available_functions, call_function
+
+MAX_ITERATIONS = 20
 
 def main():
     
@@ -27,31 +30,45 @@ def main():
         {"role": "user", "content": args.user_prompt},
     ]
     
-    #Create model response
-    response = client.chat.completions.create(
-        model="openrouter/free",
-        messages= messages,
-        tools = available_functions
-    )
-    
-    prompt_tokens = response.usage.prompt_tokens
-    completions_tokens = response.usage.completion_tokens
-    if not completions_tokens:
-        raise ValueError("Response failed try again")
-    if args.verbose:
-        print(f"User prompt: {args.user_prompt}")
-        print(f"Prompt tokens: {prompt_tokens}")
-        print(f"Response tokens: {completions_tokens}")
+    for _ in range(MAX_ITERATIONS):
+        #Create model response
+        response = client.chat.completions.create(
+            model="openrouter/free",
+            messages= messages,
+            tools = available_functions
+        )
         
-    if response.choices[0].message.tool_calls:
-        for tool_call in response.choices[0].message.tool_calls:
+        prompt_tokens = response.usage.prompt_tokens
+        completions_tokens = response.usage.completion_tokens
+        if not completions_tokens:
+            raise ValueError("Response failed try again")
+        if args.verbose:
+            print(f"User prompt: {args.user_prompt}")
+            print(f"Prompt tokens: {prompt_tokens}")
+            print(f"Response tokens: {completions_tokens}")
+        
+        # 1. Record the assistant's turn first (it carries any tool calls).
+        message = response.choices[0].message
+        messages.append(message)
+
+        # 2. No tool calls means the model is done: print the answer and stop.
+        if not message.tool_calls:
+            print("Final response:")
+            print(message.content)
+            return
+
+        # 3. Run each requested tool and append one tool message per call.
+        for tool_call in message.tool_calls:
             result_message = call_function(tool_call, verbose=args.verbose)
             if not result_message.get("content"):
                 raise RuntimeError(f"Empty result from {tool_call.function.name}")
             if args.verbose:
                 print(f"-> {result_message['content']}")
-    else:
-        print(response.choices[0].message.content)
+            messages.append(result_message)
+
+    # Only reached if all iterations ran without a final response.
+    print(f"Error: agent did not produce a final response within {MAX_ITERATIONS} iterations")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
